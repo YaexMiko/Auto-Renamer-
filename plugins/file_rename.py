@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import math
+import tempfile
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from helper.database import DARKXSIDE78
@@ -19,6 +20,22 @@ def get_readable_file_size(size_bytes):
     p = math.pow(1024, i)
     s = round(size_bytes / p, 2)
     return f"{s} {size_name[i]}"
+
+def is_valid_filename(filename):
+    """Check if filename is valid and has extension"""
+    if not filename or filename.strip() == "":
+        return False
+    
+    # Check for invalid characters
+    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    if any(char in filename for char in invalid_chars):
+        return False
+    
+    # Check if it has an extension (at least one dot with something after it)
+    if '.' not in filename or filename.endswith('.'):
+        return False
+    
+    return True
 
 async def clear_user_rename_state_after_timeout(user_id: int, timeout: int):
     """Clear user rename state after timeout"""
@@ -60,17 +77,32 @@ async def show_direct_manual_rename(client, message: Message):
     # Set timeout to clear state after 5 minutes
     asyncio.create_task(clear_user_rename_state_after_timeout(user_id, 300))
     
+    # Get current filename for reference
+    current_filename = "Unknown"
+    if message.document and message.document.file_name:
+        current_filename = message.document.file_name
+    elif message.video and message.video.file_name:
+        current_filename = message.video.file_name
+    elif message.audio and message.audio.file_name:
+        current_filename = message.audio.file_name
+    
     # Send direct rename prompt
     rename_msg = await message.reply_text(
-        "**✏️ Manual Rename Mode ✅**\n\n"
-        "Send new file name with extension.\n\n"
-        "**Note:** Don't delete your original file."
+        f"**✏️ Manual Rename Mode ✅**\n\n"
+        f"**Current Name:** `{current_filename}`\n\n"
+        f"Send new file name with extension.\n\n"
+        f"**Examples:**\n"
+        f"• `My Video.mp4`\n"
+        f"• `Document.pdf`\n"
+        f"• `Song.mp3`\n"
+        f"• `Archive.zip`\n\n"
+        f"**Note:** Extension is required!"
     )
     
     # Store the rename message for deletion
     user_rename_states[user_id]['rename_message'] = rename_msg
 
-@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "settings", "autorename", "metadata", "tutorial", "token", "gentoken", "rename", "analyze", "batchrename", "set_caption", "del_caption", "see_caption", "viewthumb", "delthumb", "settitle", "setauthor", "setartist", "setaudio", "setsubtitle", "setvideo", "setencoded_by", "setcustom_tag"]))
+@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "settings", "autorename", "metadata", "tutorial", "token", "gentoken", "rename", "analyze", "batchrename", "set_caption", "del_caption", "see_caption", "viewthumb", "delthumb", "settitle", "setauthor", "setartist", "setaudio", "setsubtitle", "setvideo", "setencoded_by", "setcustom_tag", "ssequence", "esequence", "setmedia", "broadcast", "status", "restart", "leaderboard", "add_premium", "remove_premium", "add_token", "remove_token"]))
 async def handle_manual_rename_input(client, message: Message):
     """Handle manual rename filename input"""
     user_id = message.from_user.id
@@ -101,12 +133,21 @@ async def handle_manual_rename_input(client, message: Message):
             pass
         
         # Validate filename
-        if not new_filename or any(char in new_filename for char in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']):
+        if not is_valid_filename(new_filename):
             error_msg = await client.send_message(
                 message.chat.id,
-                "❌ **Invalid filename!**\n\nFilename contains invalid characters or is empty."
+                "❌ **Invalid filename!**\n\n"
+                "**Requirements:**\n"
+                "• Must include file extension (e.g., .mp4, .pdf, .zip)\n"
+                "• Cannot contain: / \\ : * ? \" < > |\n"
+                "• Cannot be empty\n\n"
+                "**Examples:**\n"
+                "• `My Video.mp4` ✅\n"
+                "• `Document.pdf` ✅\n"
+                "• `MyFile` ❌ (no extension)\n"
+                "• `File*.txt` ❌ (invalid character)"
             )
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)
             await error_msg.delete()
             # Clear state
             if user_id in user_rename_states:
@@ -144,41 +185,56 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
             "📥 **Downloading file...**"
         )
         
-        # Create downloads directory if it doesn't exist
-        downloads_dir = "downloads"
-        if not os.path.exists(downloads_dir):
-            os.makedirs(downloads_dir)
+        # Create a temporary directory for this user
+        temp_dir = tempfile.mkdtemp(prefix=f"rename_{user_id}_")
         
         # Get original filename for download
         original_filename = None
-        if message.document:
-            original_filename = message.document.file_name or "document"
-        elif message.video:
-            original_filename = message.video.file_name or "video.mp4"
-        elif message.audio:
-            original_filename = message.audio.file_name or "audio.mp3"
+        file_extension = ""
         
-        # Download file with specific path
-        download_path = os.path.join(downloads_dir, f"{user_id}_{original_filename}")
+        if message.document:
+            original_filename = message.document.file_name or f"document_{user_id}"
+        elif message.video:
+            original_filename = message.video.file_name or f"video_{user_id}.mp4"
+        elif message.audio:
+            original_filename = message.audio.file_name or f"audio_{user_id}.mp3"
+        
+        # If no original filename, create one with proper extension
+        if not original_filename:
+            if message.document:
+                original_filename = f"document_{user_id}.bin"
+            elif message.video:
+                original_filename = f"video_{user_id}.mp4"
+            elif message.audio:
+                original_filename = f"audio_{user_id}.mp3"
+        
+        # Download file to temporary directory
+        download_path = os.path.join(temp_dir, original_filename)
         
         try:
-            file_path = await message.download(file_name=download_path)
+            # Download using the message directly
+            file_path = await client.download_media(message, file_name=download_path)
             logging.info(f"Downloaded file to: {file_path}")
+            
+            # Verify download was successful
+            if not file_path or not os.path.exists(file_path):
+                raise Exception("Download failed - file not found")
+                
         except Exception as download_error:
             logging.error(f"Download error: {download_error}")
             await progress_msg.edit_text(f"❌ **Download failed:** {str(download_error)}")
-            return False
-        
-        if not file_path or not os.path.exists(file_path):
-            await progress_msg.edit_text("❌ **Download failed! File not found.**")
+            # Clean up temp directory
+            try:
+                os.rmdir(temp_dir)
+            except:
+                pass
             return False
         
         # Update progress
         await progress_msg.edit_text("🔄 **Renaming file...**")
         
-        # Create new file path with new name
-        directory = os.path.dirname(file_path)
-        new_file_path = os.path.join(directory, new_filename)
+        # Create new file path with new name in same directory
+        new_file_path = os.path.join(temp_dir, new_filename)
         
         # Rename file
         try:
@@ -187,9 +243,10 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
         except Exception as rename_error:
             logging.error(f"Rename error: {rename_error}")
             await progress_msg.edit_text(f"❌ **Rename failed:** {str(rename_error)}")
-            # Clean up original file
+            # Clean up
             try:
                 os.remove(file_path)
+                os.rmdir(temp_dir)
             except:
                 pass
             return False
@@ -197,6 +254,11 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
         # Verify the renamed file exists
         if not os.path.exists(new_file_path):
             await progress_msg.edit_text("❌ **Rename failed! New file not found.**")
+            # Clean up
+            try:
+                os.rmdir(temp_dir)
+            except:
+                pass
             return False
         
         # Update progress
@@ -210,44 +272,38 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
         # Prepare caption with variables
         final_caption = prepare_caption(caption, new_filename, message)
         
+        # Determine file type based on extension
+        file_ext = new_filename.lower().split('.')[-1]
+        
         # Upload based on file type and settings
         try:
-            if message.document:
-                if settings.get('send_as') == 'VIDEO' and new_filename.lower().endswith(('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm')):
-                    await client.send_video(
-                        chat_id=message.chat.id,
-                        video=new_file_path,
-                        caption=final_caption,
-                        thumb=thumbnail,
-                        supports_streaming=True
-                    )
-                else:
-                    await client.send_document(
-                        chat_id=message.chat.id,
-                        document=new_file_path,
-                        caption=final_caption,
-                        thumb=thumbnail
-                    )
-            elif message.video:
-                if settings.get('send_as') == 'DOCUMENT':
-                    await client.send_document(
-                        chat_id=message.chat.id,
-                        document=new_file_path,
-                        caption=final_caption,
-                        thumb=thumbnail
-                    )
-                else:
-                    await client.send_video(
-                        chat_id=message.chat.id,
-                        video=new_file_path,
-                        caption=final_caption,
-                        thumb=thumbnail,
-                        supports_streaming=True
-                    )
-            elif message.audio:
+            # Video extensions
+            video_extensions = ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v', '3gp', 'ogv']
+            # Audio extensions  
+            audio_extensions = ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'wma', 'opus']
+            
+            if file_ext in video_extensions and settings.get('send_as') != 'DOCUMENT':
+                # Send as video
+                await client.send_video(
+                    chat_id=message.chat.id,
+                    video=new_file_path,
+                    caption=final_caption,
+                    thumb=thumbnail,
+                    supports_streaming=True
+                )
+            elif file_ext in audio_extensions and settings.get('send_as') != 'DOCUMENT':
+                # Send as audio
                 await client.send_audio(
                     chat_id=message.chat.id,
                     audio=new_file_path,
+                    caption=final_caption,
+                    thumb=thumbnail
+                )
+            else:
+                # Send as document (default)
+                await client.send_document(
+                    chat_id=message.chat.id,
+                    document=new_file_path,
                     caption=final_caption,
                     thumb=thumbnail
                 )
@@ -255,7 +311,8 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
             # Update progress - success
             await progress_msg.edit_text(
                 f"✅ **File renamed and uploaded successfully!**\n\n"
-                f"**New Name:** `{new_filename}`"
+                f"**New Name:** `{new_filename}`\n"
+                f"**Type:** {file_ext.upper()}"
             )
             
             # Update user stats
@@ -275,11 +332,13 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
             return False
             
         finally:
-            # Clean up - always remove the file after upload attempt
+            # Clean up - always remove the temporary directory
             try:
                 if os.path.exists(new_file_path):
                     os.remove(new_file_path)
-                    logging.info(f"Cleaned up file: {new_file_path}")
+                if os.path.exists(temp_dir):
+                    os.rmdir(temp_dir)
+                logging.info(f"Cleaned up temporary files")
             except Exception as cleanup_error:
                 logging.error(f"Cleanup error: {cleanup_error}")
         
@@ -361,10 +420,13 @@ async def manual_rename_command(client, message: Message):
     new_filename = " ".join(message.command[1:]).strip()
     
     # Validate filename
-    if not new_filename or any(char in new_filename for char in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']):
+    if not is_valid_filename(new_filename):
         await message.reply_text(
             "❌ **Invalid filename!**\n\n"
-            "Filename contains invalid characters or is empty."
+            "**Requirements:**\n"
+            "• Must include file extension\n"
+            "• Cannot contain invalid characters\n\n"
+            "**Example:** `My Video.mp4`"
         )
         return
     
