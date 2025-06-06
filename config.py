@@ -59,9 +59,9 @@ class Txt:
 
 **ɪ ᴀᴍ ᴀɴ ᴀᴅᴠᴀɴᴄᴇᴅ ᴀᴜᴛᴏ ʀᴇɴᴀᴍᴇ ʙᴏᴛ ᴡɪᴛʜ ᴍᴀɴʏ ғᴇᴀᴛᴜʀᴇs**
 
-**I can rename your files automatically with custom templates!**
+**I can rename your files with custom templates!**
 
-**Use /autorename to get started**
+**Use /settings to configure rename options**
 """
 
     ABOUT_TXT = """
