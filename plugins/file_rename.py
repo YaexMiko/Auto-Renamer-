@@ -40,7 +40,7 @@ async def handle_file_for_rename(client, message: Message):
         await show_direct_manual_rename(client, message)
         return
     
-    # Try auto-rename for Auto mode
+    # Try auto-rename for Auto modes
     auto_renamed = await auto_rename_file(client, message)
     
     # If auto-rename failed or not applicable, show manual rename
@@ -57,20 +57,20 @@ async def show_direct_manual_rename(client, message: Message):
         'state': 'waiting_filename'
     }
     
-    # Set timeout
-    asyncio.create_task(clear_user_rename_state_after_timeout(user_id, 60))
+    # Set timeout to clear state after 5 minutes
+    asyncio.create_task(clear_user_rename_state_after_timeout(user_id, 300))
     
     # Send direct rename prompt
     rename_msg = await message.reply_text(
         "**✏️ Manual Rename Mode ✅**\n\n"
-        "Send New file name with extension.\n\n"
+        "Send new file name with extension.\n\n"
         "**Note:** Don't delete your original file."
     )
     
     # Store the rename message for deletion
     user_rename_states[user_id]['rename_message'] = rename_msg
 
-@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "settings", "autorename", "metadata", "tutorial", "token", "gentoken", "rename", "analyze", "batchrename"]))
+@Client.on_message(filters.private & filters.text & ~filters.command(["start", "help", "settings", "autorename", "metadata", "tutorial", "token", "gentoken", "rename", "analyze", "batchrename", "set_caption", "del_caption", "see_caption", "viewthumb", "delthumb", "settitle", "setauthor", "setartist", "setaudio", "setsubtitle", "setvideo", "setencoded_by", "setcustom_tag"]))
 async def handle_manual_rename_input(client, message: Message):
     """Handle manual rename filename input"""
     user_id = message.from_user.id
@@ -102,7 +102,10 @@ async def handle_manual_rename_input(client, message: Message):
         
         # Validate filename
         if not new_filename or any(char in new_filename for char in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']):
-            error_msg = await message.reply_text("❌ **Invalid filename!**\n\nFilename contains invalid characters.")
+            error_msg = await client.send_message(
+                message.chat.id,
+                "❌ **Invalid filename!**\n\nFilename contains invalid characters or is empty."
+            )
             await asyncio.sleep(3)
             await error_msg.delete()
             # Clear state
@@ -131,12 +134,25 @@ async def handle_manual_rename_input(client, message: Message):
             del user_rename_states[user_id]
 
 async def rename_and_upload_file_direct(client, message: Message, new_filename):
-    """Rename and upload file directly without status messages"""
+    """Rename and upload file directly with progress tracking"""
     try:
         user_id = message.from_user.id
         
-        # Start downloading immediately
+        # Show progress message
+        progress_msg = await client.send_message(
+            message.chat.id,
+            "📥 **Downloading file...**"
+        )
+        
+        # Download file
         file_path = await message.download()
+        
+        if not file_path:
+            await progress_msg.edit_text("❌ **Download failed!**")
+            return False
+        
+        # Update progress
+        await progress_msg.edit_text("🔄 **Renaming file...**")
         
         # Create new file path with new name
         directory = os.path.dirname(file_path)
@@ -145,106 +161,200 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
         # Rename file
         os.rename(file_path, new_file_path)
         
+        # Update progress
+        await progress_msg.edit_text("📤 **Uploading file...**")
+        
         # Get user settings for upload
         settings = await DARKXSIDE78.get_user_settings(user_id)
         thumbnail = await DARKXSIDE78.get_thumbnail(user_id)
         caption = await DARKXSIDE78.get_caption(user_id)
         
-        # Prepare caption
-        final_caption = caption or new_filename
+        # Prepare caption with variables
+        final_caption = prepare_caption(caption, new_filename, message)
         
         # Upload based on file type and settings
-        if message.document:
-            if settings.get('send_as') == 'media' and new_filename.lower().endswith(('.mp4', '.avi', '.mkv', '.mov')):
-                await client.send_video(
+        try:
+            if message.document:
+                if settings.get('send_as') == 'VIDEO' and new_filename.lower().endswith(('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm')):
+                    await client.send_video(
+                        chat_id=message.chat.id,
+                        video=new_file_path,
+                        caption=final_caption,
+                        thumb=thumbnail,
+                        supports_streaming=True
+                    )
+                else:
+                    await client.send_document(
+                        chat_id=message.chat.id,
+                        document=new_file_path,
+                        caption=final_caption,
+                        thumb=thumbnail
+                    )
+            elif message.video:
+                if settings.get('send_as') == 'DOCUMENT':
+                    await client.send_document(
+                        chat_id=message.chat.id,
+                        document=new_file_path,
+                        caption=final_caption,
+                        thumb=thumbnail
+                    )
+                else:
+                    await client.send_video(
+                        chat_id=message.chat.id,
+                        video=new_file_path,
+                        caption=final_caption,
+                        thumb=thumbnail,
+                        supports_streaming=True
+                    )
+            elif message.audio:
+                await client.send_audio(
                     chat_id=message.chat.id,
-                    video=new_file_path,
-                    caption=final_caption,
-                    thumb=thumbnail,
-                    supports_streaming=True
-                )
-            else:
-                await client.send_document(
-                    chat_id=message.chat.id,
-                    document=new_file_path,
+                    audio=new_file_path,
                     caption=final_caption,
                     thumb=thumbnail
                 )
-        elif message.video:
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=new_file_path,
-                caption=final_caption,
-                thumb=thumbnail,
-                supports_streaming=True
+            
+            # Update progress - success
+            await progress_msg.edit_text(
+                f"✅ **File renamed and uploaded successfully!**\n\n"
+                f"**New Name:** `{new_filename}`"
             )
-        elif message.audio:
-            await client.send_audio(
-                chat_id=message.chat.id,
-                audio=new_file_path,
-                caption=final_caption,
-                thumb=thumbnail
-            )
+            
+            # Clean up
+            try:
+                os.remove(new_file_path)
+            except:
+                pass
+            
+            # Update user stats
+            try:
+                await DARKXSIDE78.col.update_one(
+                    {"_id": user_id},
+                    {"$inc": {"rename_count": 1}}
+                )
+            except:
+                pass
+                
+            return True
+            
+        except Exception as upload_error:
+            logging.error(f"Upload error: {upload_error}")
+            await progress_msg.edit_text(f"❌ **Upload failed:** {str(upload_error)}")
+            
+            # Clean up
+            try:
+                os.remove(new_file_path)
+            except:
+                pass
+            
+            return False
         
-        # Clean up
+    except Exception as e:
+        logging.error(f"Rename and upload error: {e}")
         try:
-            os.remove(new_file_path)
+            await progress_msg.edit_text(f"❌ **Process failed:** {str(e)}")
         except:
             pass
-        
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error in direct rename and upload: {e}")
         return False
 
-async def apply_metadata_to_file(file_path, user_id):
-    """Apply metadata to file if enabled"""
+def prepare_caption(caption_template, filename, message):
+    """Prepare caption with variable substitution"""
+    if not caption_template:
+        return filename
+    
     try:
-        metadata_status = await DARKXSIDE78.get_metadata(user_id)
-        if metadata_status == "Off":
-            return file_path
+        # Get file info
+        file_size = 0
+        duration = "Unknown"
         
-        # Get metadata values
-        title = await DARKXSIDE78.get_title(user_id)
-        author = await DARKXSIDE78.get_author(user_id)
-        artist = await DARKXSIDE78.get_artist(user_id)
-        audio = await DARKXSIDE78.get_audio(user_id)
-        subtitle = await DARKXSIDE78.get_subtitle(user_id)
-        video = await DARKXSIDE78.get_video(user_id)
-        encoded_by = await DARKXSIDE78.get_encoded_by(user_id)
-        custom_tag = await DARKXSIDE78.get_custom_tag(user_id)
+        if message.document:
+            file_size = message.document.file_size or 0
+        elif message.video:
+            file_size = message.video.file_size or 0
+            duration = message.video.duration or 0
+            if isinstance(duration, int):
+                mins, secs = divmod(duration, 60)
+                hours, mins = divmod(mins, 60)
+                if hours:
+                    duration = f"{hours:02d}:{mins:02d}:{secs:02d}"
+                else:
+                    duration = f"{mins:02d}:{secs:02d}"
+        elif message.audio:
+            file_size = message.audio.file_size or 0
+            duration = message.audio.duration or 0
+            if isinstance(duration, int):
+                mins, secs = divmod(duration, 60)
+                duration = f"{mins:02d}:{secs:02d}"
         
-        # Create metadata command
-        metadata_cmd = ["ffmpeg", "-i", file_path]
+        # Convert file size to readable format
+        readable_size = get_readable_file_size(file_size)
         
-        # Add metadata options
-        if title:
-            metadata_cmd.extend(["-metadata", f"title={title}"])
-        if author:
-            metadata_cmd.extend(["-metadata", f"author={author}"])
-        if artist:
-            metadata_cmd.extend(["-metadata", f"artist={artist}"])
-        if audio:
-            metadata_cmd.extend(["-metadata", f"audio={audio}"])
-        if subtitle:
-            metadata_cmd.extend(["-metadata", f"subtitle={subtitle}"])
-        if video:
-            metadata_cmd.extend(["-metadata", f"video={video}"])
-        if encoded_by:
-            metadata_cmd.extend(["-metadata", f"encoded_by={encoded_by}"])
-        if custom_tag:
-            metadata_cmd.extend(["-metadata", f"comment={custom_tag}"])
+        # Replace variables in caption
+        caption = caption_template.replace("{filename}", filename)
+        caption = caption.replace("{filesize}", readable_size)
+        caption = caption.replace("{duration}", str(duration))
         
-        # Output file
-        output_path = file_path.replace(".mp4", "_metadata.mp4")
-        metadata_cmd.extend(["-c", "copy", output_path])
-        
-        # Run ffmpeg command (simplified for this example)
-        # In production, you would use subprocess.run or asyncio.subprocess
-        
-        return output_path if os.path.exists(output_path) else file_path
+        return caption
         
     except Exception as e:
-        logging.error(f"Error applying metadata: {e}")
-        return file_path
+        logging.error(f"Caption preparation error: {e}")
+        return filename
+
+# Alternative method for manual rename via command
+@Client.on_message(filters.private & filters.command("rename"))
+async def manual_rename_command(client, message: Message):
+    """Manual rename command for direct filename input"""
+    user_id = message.from_user.id
+    
+    # Check if user has sent a file recently
+    if user_id not in user_rename_states:
+        await message.reply_text(
+            "❌ **No file to rename!**\n\n"
+            "Please send a file first, then use this command."
+        )
+        return
+    
+    # Check command format
+    if len(message.command) < 2:
+        await message.reply_text(
+            "❌ **Invalid format!**\n\n"
+            "**Usage:** `/rename <new_filename>`\n"
+            "**Example:** `/rename My Video.mp4`"
+        )
+        return
+    
+    # Get new filename from command
+    new_filename = " ".join(message.command[1:]).strip()
+    
+    # Validate filename
+    if not new_filename or any(char in new_filename for char in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']):
+        await message.reply_text(
+            "❌ **Invalid filename!**\n\n"
+            "Filename contains invalid characters or is empty."
+        )
+        return
+    
+    # Get original message
+    state_info = user_rename_states[user_id]
+    original_msg = state_info.get('original_message')
+    
+    if not original_msg:
+        await message.reply_text(
+            "❌ **Original file not found!**\n\n"
+            "Please send the file again."
+        )
+        if user_id in user_rename_states:
+            del user_rename_states[user_id]
+        return
+    
+    # Start rename process
+    success = await rename_and_upload_file_direct(client, original_msg, new_filename)
+    
+    # Clear state
+    if user_id in user_rename_states:
+        del user_rename_states[user_id]
+    
+    if success:
+        await message.reply_text("✅ **Rename completed successfully!**")
+    else:
+        await message.reply_text("❌ **Rename failed!**")
