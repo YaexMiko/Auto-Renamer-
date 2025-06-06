@@ -144,11 +144,33 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
             "📥 **Downloading file...**"
         )
         
-        # Download file
-        file_path = await message.download()
+        # Create downloads directory if it doesn't exist
+        downloads_dir = "downloads"
+        if not os.path.exists(downloads_dir):
+            os.makedirs(downloads_dir)
         
-        if not file_path:
-            await progress_msg.edit_text("❌ **Download failed!**")
+        # Get original filename for download
+        original_filename = None
+        if message.document:
+            original_filename = message.document.file_name or "document"
+        elif message.video:
+            original_filename = message.video.file_name or "video.mp4"
+        elif message.audio:
+            original_filename = message.audio.file_name or "audio.mp3"
+        
+        # Download file with specific path
+        download_path = os.path.join(downloads_dir, f"{user_id}_{original_filename}")
+        
+        try:
+            file_path = await message.download(file_name=download_path)
+            logging.info(f"Downloaded file to: {file_path}")
+        except Exception as download_error:
+            logging.error(f"Download error: {download_error}")
+            await progress_msg.edit_text(f"❌ **Download failed:** {str(download_error)}")
+            return False
+        
+        if not file_path or not os.path.exists(file_path):
+            await progress_msg.edit_text("❌ **Download failed! File not found.**")
             return False
         
         # Update progress
@@ -159,7 +181,23 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
         new_file_path = os.path.join(directory, new_filename)
         
         # Rename file
-        os.rename(file_path, new_file_path)
+        try:
+            os.rename(file_path, new_file_path)
+            logging.info(f"Renamed file from {file_path} to {new_file_path}")
+        except Exception as rename_error:
+            logging.error(f"Rename error: {rename_error}")
+            await progress_msg.edit_text(f"❌ **Rename failed:** {str(rename_error)}")
+            # Clean up original file
+            try:
+                os.remove(file_path)
+            except:
+                pass
+            return False
+        
+        # Verify the renamed file exists
+        if not os.path.exists(new_file_path):
+            await progress_msg.edit_text("❌ **Rename failed! New file not found.**")
+            return False
         
         # Update progress
         await progress_msg.edit_text("📤 **Uploading file...**")
@@ -220,34 +258,30 @@ async def rename_and_upload_file_direct(client, message: Message, new_filename):
                 f"**New Name:** `{new_filename}`"
             )
             
-            # Clean up
-            try:
-                os.remove(new_file_path)
-            except:
-                pass
-            
             # Update user stats
             try:
                 await DARKXSIDE78.col.update_one(
                     {"_id": user_id},
                     {"$inc": {"rename_count": 1}}
                 )
-            except:
-                pass
-                
+            except Exception as stats_error:
+                logging.error(f"Stats update error: {stats_error}")
+            
             return True
             
         except Exception as upload_error:
             logging.error(f"Upload error: {upload_error}")
             await progress_msg.edit_text(f"❌ **Upload failed:** {str(upload_error)}")
-            
-            # Clean up
-            try:
-                os.remove(new_file_path)
-            except:
-                pass
-            
             return False
+            
+        finally:
+            # Clean up - always remove the file after upload attempt
+            try:
+                if os.path.exists(new_file_path):
+                    os.remove(new_file_path)
+                    logging.info(f"Cleaned up file: {new_file_path}")
+            except Exception as cleanup_error:
+                logging.error(f"Cleanup error: {cleanup_error}")
         
     except Exception as e:
         logging.error(f"Rename and upload error: {e}")
